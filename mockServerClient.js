@@ -5,10 +5,17 @@
  * Copyright (c) 2014 James Bloom
  * Licensed under the Apache License, Version 2.0
  */
+import md_shared from "../md_shared";
+
+import {configureOpenApiSpecificationOptions, sanitizeOptions} from "../helpers";
+
 var mockServerClient;
 
 (function () {
     "use strict";
+
+    const NodeCache = require("node-cache");
+    const myCache = new NodeCache();
 
     /**
      * Start the client communicating at the specified host and port
@@ -819,6 +826,100 @@ var mockServerClient;
             };
         };
 
+        // ************************************************************************************************************
+        // Mock Service Customization
+        // ************************************************************************************************************
+
+        var clearAllMocks = function () {
+            return clear("", "EXPECTATIONS");
+        };
+
+        var clearAllAndLoadMockSequence = function (mockSequence) {
+            return clearAllMocks().then(() => mockAnyResponse(mockSequence));
+        };
+
+        var loadMockSequence = function (mockSequence) {
+            return mockAnyResponse(mockSequence);
+        };
+
+        var loadOpenAPI = function (openapi) {
+            var jsyaml = require("../../../mock-helpers/mock-designer/js/js-yaml.min");
+            const jsonApiSpec = jsyaml.load(openapi)
+            return openAPIExpectation(md_shared.designer_core.generateNewApiSpecConfig(jsonApiSpec));
+        };
+
+        var clearAllAndLoadOpenAPI = function (openapi) {
+            return clearAllMocks().then(() => loadOpenAPI(openapi));
+        };
+
+        /**
+         * Retrieve authentication_v1_0 OpenAPI Specification from Developer Portal and load those expectations to Mock Server
+         * for an accurate, quick mock of Login Service.
+         *
+         * @param options optional argument of array of objects containing customization content for the Mock Expectations.
+         */
+        var mockLoginService = function (options) {
+            return mockByResourceId("authentication", options);
+        };
+
+        /**
+         * Retrieve the OpenAPI Specification using the Resource ID which can be found in the OAS `info` section represented as
+         * `x-resource-name`. Using this value in x-resource-name we need to make the string lower case and replace spaces with -.
+         * Example of manipulating the resource name to be the Resource ID below:
+         *
+         * OpenAPI: document_viewer_v1_0.yml
+         * info:
+         *   title: Document Viewer
+         *   x-product-category: Project Management
+         *   x-tool-category: Document Viewer
+         *   x-resource-name: Document Viewer
+         *   version: '1.0'
+         *
+         * The Resource ID for the above OAS metadata will be:
+         *   x-resource-name: Document Viewer
+         *   Resource ID: document-viewer
+         *
+         * @param resource String representing the Resource ID described above.
+         * @param options optional argument of array of objects containing customization content for the Mock Expectations.
+         */
+        var mockByResourceId = async function (resource, options) {
+            let openApiSpecificationList = myCache.get(resource)
+                ? myCache.get(resource)
+                : await md_shared.oasTools.getOpenApiSpecifications(
+                    "resource_name_id",
+                    resource
+                );
+
+            myCache.set(resource, openApiSpecificationList);
+
+            options = sanitizeOptions(options);
+            await configureOpenApiSpecificationOptions(openApiSpecificationList, options);
+            await loadListOfOpenAPISpecifications(openApiSpecificationList, options);
+        };
+
+        var loadListOfOpenAPISpecifications = async function (openAPISpecificationList, options) {
+            let foundOptions = [];
+            for (const oas of openAPISpecificationList) {
+                let authenticationOasConfig =
+                    md_shared.designer_core.generateNewApiSpecConfig(oas);
+
+                // Iterate over the options to make sure the correct status code is returned for each path.
+                for (const option of options) {
+                    let operationPathKey =
+                        option["operation"].toLowerCase() + " " + option["path"].toLowerCase();
+                    if (authenticationOasConfig.operationsAndResponses[operationPathKey]) {
+                        authenticationOasConfig.operationsAndResponses[operationPathKey] =
+                            option["code"].toString();
+                        foundOptions.push(option);
+                    }
+                }
+                // remove found options
+                options = options.filter((x) => !foundOptions.includes(x));
+
+                await openAPIExpectation(authenticationOasConfig);
+            }
+        };
+
         /* jshint -W003 */
         var _this = {
             openAPIExpectation: openAPIExpectation,
@@ -838,7 +939,15 @@ var mockServerClient;
             retrieveRecordedRequestsAndResponses: retrieveRecordedRequestsAndResponses,
             retrieveActiveExpectations: retrieveActiveExpectations,
             retrieveRecordedExpectations: retrieveRecordedExpectations,
-            retrieveLogMessages: retrieveLogMessages
+            retrieveLogMessages: retrieveLogMessages,
+            // Mock Service Customization
+            loadMockSequence: loadMockSequence,
+            loadOpenAPI: loadOpenAPI,
+            clearAllMocks: clearAllMocks,
+            clearAllAndLoadMockSequence: clearAllAndLoadMockSequence,
+            clearAllAndLoadOpenAPI: clearAllAndLoadOpenAPI,
+            mockLoginService: mockLoginService,
+            mockByResourceId: mockByResourceId,
         };
         return _this;
     };
